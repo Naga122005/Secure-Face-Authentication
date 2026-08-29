@@ -1,0 +1,48 @@
+# Virtual environment
+venv/
+.venv/
+
+# Environment variables
+.env
+.env.*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+database/
+databases/
+db/
+
+# Private biometric data
+Data/faces/
+
+# Private audio/data files
+Data/audio/
+
+# Generated feature files
+*.npy
+*.npz
+
+# Datasets
+Data/dataset/
+Data/datasets/
+Data/VCC2018/
+Data/VCC2020/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE
+.vscode/
+.idea/
+
+# Model files
+*.pt
+*.pth
+*.onnx
+
+# Logs
+*.log
