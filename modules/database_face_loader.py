@@ -1,46 +1,82 @@
 import mysql.connector
-import numpy as np
+import os
 
 
-# ============================================================
-# DATABASE CONFIGURATION
-# ============================================================
+class AudioDatabase:
 
-DB_HOST = "localhost"
-DB_USER = "root"
-DB_PASSWORD = "naga*"
-DB_NAME = "secure_face_authentication"
-
-
-# ============================================================
-# LOAD FACE FEATURE
-# ============================================================
-
-def load_face_feature(username):
-
-    print("=" * 60)
-    print("DATABASE FACE FEATURE LOADER")
-    print("=" * 60)
-
-    try:
-
-        # Connect to MySQL
-        connection = mysql.connector.connect(
-            host=DB_HOST,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME
+    def __init__(self):
+        self.connection = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="naga*",
+            database="secure_face_authentication"
         )
 
-        print("\nDatabase connected successfully.")
+        print("Database connected successfully.")
 
-        cursor = connection.cursor()
+    # ---------------------------------------------------------
+    # STORE HIGH-FIDELITY STEGO AUDIO
+    # ---------------------------------------------------------
 
-        # Retrieve feature
+    def store_stego_audio(self, username, audio_path):
+
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(
+                f"Stego audio not found: {audio_path}"
+            )
+
+        with open(audio_path, "rb") as audio_file:
+            audio_data = audio_file.read()
+
+        cursor = self.connection.cursor()
+
         query = """
-        SELECT face_features
-        FROM users
-        WHERE username = %s
+            INSERT INTO users
+            (username, stego_audio, audio_format)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+            stego_audio = VALUES(stego_audio),
+            audio_format = VALUES(audio_format)
+        """
+
+        cursor.execute(
+            query,
+            (
+                username,
+                audio_data,
+                "wav"
+            )
+        )
+
+        self.connection.commit()
+
+        cursor.close()
+
+        print(
+            f"Stego audio stored successfully "
+            f"for user: {username}"
+        )
+
+        print(
+            f"Stored audio size: {len(audio_data)} bytes"
+        )
+
+    # ---------------------------------------------------------
+    # RETRIEVE HIGH-FIDELITY STEGO AUDIO
+    # ---------------------------------------------------------
+
+    def retrieve_stego_audio(
+        self,
+        username,
+        output_path
+    ):
+
+        cursor = self.connection.cursor()
+
+        query = """
+            SELECT stego_audio
+            FROM users
+            WHERE username = %s
         """
 
         cursor.execute(
@@ -50,97 +86,70 @@ def load_face_feature(username):
 
         result = cursor.fetchone()
 
-        if result is None:
+        cursor.close()
 
-            print(
-                f"\nERROR: User '{username}' not found."
+        if result is None:
+            raise ValueError(
+                f"No stego audio found for user: {username}"
             )
 
-            cursor.close()
-            connection.close()
+        audio_data = result[0]
 
-            return None
+        os.makedirs(
+            os.path.dirname(output_path)
+            if os.path.dirname(output_path)
+            else ".",
+            exist_ok=True
+        )
 
-        # Retrieve binary data
-        feature_bytes = result[0]
+        with open(output_path, "wb") as audio_file:
+            audio_file.write(audio_data)
 
         print(
-            "\nFace feature retrieved successfully."
+            f"Stego audio retrieved successfully."
         )
 
         print(
-            "Retrieved bytes:",
-            len(feature_bytes)
-        )
-
-        # Convert bytes back to float32
-        face_features = np.frombuffer(
-            feature_bytes,
-            dtype=np.float32
-        ).copy()
-
-        print(
-            "Feature shape:",
-            face_features.shape
+            f"Retrieved bytes: {len(audio_data)}"
         )
 
         print(
-            "Feature dtype:",
-            face_features.dtype
+            f"Saved to: {output_path}"
         )
+
+        return output_path
+
+    # ---------------------------------------------------------
+    # CHECK USER
+    # ---------------------------------------------------------
+
+    def user_exists(self, username):
+
+        cursor = self.connection.cursor()
+
+        query = """
+            SELECT id
+            FROM users
+            WHERE username = %s
+        """
+
+        cursor.execute(
+            query,
+            (username,)
+        )
+
+        result = cursor.fetchone()
 
         cursor.close()
-        connection.close()
 
-        return face_features
+        return result is not None
 
-    except mysql.connector.Error as error:
+    # ---------------------------------------------------------
+    # CLOSE DATABASE
+    # ---------------------------------------------------------
 
-        print(
-            "\nDatabase error:"
-        )
+    def close(self):
 
-        print(error)
-
-        return None
-
-
-# ============================================================
-# TEST
-# ============================================================
-
-if __name__ == "__main__":
-
-    username = input(
-        "Enter username: "
-    ).strip()
-
-    features = load_face_feature(
-        username
-    )
-
-    if features is not None:
-
-        print("\n" + "=" * 60)
-        print("FEATURE LOADING SUCCESSFUL")
-        print("=" * 60)
-
-        print(
-            "\nUser:",
-            username
-        )
-
-        print(
-            "Feature dimensions:",
-            features.shape
-        )
-
-        print(
-            "Number of features:",
-            len(features)
-        )
-
-        print(
-            "First 5 values:",
-            features[:5]
-        )
+        if self.connection.is_connected():
+            self.connection.close()
+            print("Database connection closed.")

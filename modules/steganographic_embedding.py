@@ -1,244 +1,143 @@
-import numpy as np
+
 from pathlib import Path
-import sys
+import hashlib
+import struct
+
+import numpy as np
+import soundfile as sf
+
+ROOT = Path(__file__).resolve().parent.parent
+AUDIO_DIR = ROOT / "data" / "audio"
+
+PAYLOAD_PATH = AUDIO_DIR / "encoded_biometric_payload.bin"
+CARRIER_LIST = AUDIO_DIR / "selected_carrier_audio.txt"
+OUTPUT_PATH = AUDIO_DIR / "stego_audio.wav"
+
+MAGIC = b"CFD1"
+VERSION = 1
+HEADER_SIZE = 41
+
+REPETITIONS = 8
+QUANT_STEP = 0.002
 
 
-# ==========================================
-# PROJECT PATH
-# ==========================================
+def find_carrier():
+    if CARRIER_LIST.exists():
+        saved = CARRIER_LIST.read_text(encoding="utf-8").strip().strip('"')
+        if saved:
+            candidate = Path(saved)
+            if candidate.exists():
+                return candidate
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+            matches = list((ROOT / "Data").rglob(candidate.name))
+            if matches:
+                return matches[0]
 
-sys.path.append(str(BASE_DIR))
+    matches = list((ROOT / "Data").rglob("E30012.wav"))
+    if matches:
+        return matches[0]
 
-
-# ==========================================
-# FILE PATHS
-# ==========================================
-
-ENCRYPTED_FACE_PATH = (
-    BASE_DIR
-    / "data"
-    / "faces"
-    / "encrypted_face_embedding.bin"
-)
+    raise FileNotFoundError("Selected VCC2020 carrier WAV was not found.")
 
 
-OUTPUT_PATH = (
-    BASE_DIR
-    / "data"
-    / "faces"
-    / "embedded_face_data.npy"
-)
+def make_frame(payload):
+    header = (
+        MAGIC
+        + struct.pack(">B", VERSION)
+        + struct.pack(">I", len(payload))
+        + hashlib.sha256(payload).digest()
+    )
+    return header + payload
 
 
-# ==========================================
-# LOAD ENCRYPTED FACE DATA
-# ==========================================
-
-def load_encrypted_face():
-
-    if not ENCRYPTED_FACE_PATH.exists():
-
-        print("\nERROR: Encrypted face data not found!")
-
-        print("Expected location:")
-        print(ENCRYPTED_FACE_PATH)
-
-        return None
-
-    with open(ENCRYPTED_FACE_PATH, "rb") as file:
-
-        encrypted_data = file.read()
-
-    print("\nEncrypted face data loaded successfully.")
-
-    print("Encrypted data size:")
-    print(len(encrypted_data), "bytes")
-
-    return encrypted_data
-
-
-# ==========================================
-# CONVERT BYTES TO NUMBERS
-# ==========================================
-
-def bytes_to_array(data):
-
-    # Convert bytes to unsigned 8-bit integers
-    data_array = np.frombuffer(
-        data,
-        dtype=np.uint8
-    ).astype(np.float32)
-
-    # Convert values from 0-255 to approximately
-    # -1 to +1
-    data_array = (
-        data_array / 127.5
-    ) - 1.0
-
-    return data_array
-
-
-# ==========================================
-# EMBEDDING FUNCTION
-# ==========================================
-
-def embed_data(
-    content_features,
-    encrypted_data,
-    alpha=0.01
-):
-    """
-    Embed encrypted face information
-    into audio content features.
-
-    alpha controls embedding strength.
-    """
-
-    if content_features is None:
-
-        print("Content features are unavailable.")
-
-        return None
-
-    # Convert encrypted bytes
-    secret_data = bytes_to_array(
-        encrypted_data
+def bits_from_bytes(data):
+    return np.unpackbits(
+        np.frombuffer(data, dtype=np.uint8), bitorder="big"
     )
 
-    # Flatten content features
-    content = content_features.flatten()
 
-    print("\nContent feature size:")
-    print(len(content))
+def embed_bit(a, b, bit):
+    mean = (a + b) / 2.0
+    difference = a - b
+    base = int(np.floor(difference / QUANT_STEP))
 
-    print("Encrypted data size:")
-    print(len(secret_data))
+    # Choose the closest quantization-bin center with the required parity.
+    candidates = [
+        k for k in range(base - 2, base + 3)
+        if k % 2 == bit
+    ]
+    target_k = min(
+        candidates,
+        key=lambda k: abs(
+            (k + 0.5) * QUANT_STEP - difference
+        )
+    )
 
-    # Check capacity
-    if len(secret_data) > len(content):
+    target_difference = (target_k + 0.5) * QUANT_STEP
+    return (
+        mean + target_difference / 2.0,
+        mean - target_difference / 2.0
+    )
 
-        print("\nERROR: Content feature capacity is too small.")
 
-        print(
-            "Need:",
-            len(secret_data),
-            "values"
+def main():
+    if not PAYLOAD_PATH.exists():
+        raise FileNotFoundError(
+            f"Payload not found: {PAYLOAD_PATH}\n"
+            "Run modules.content_payload_encoder first."
         )
 
-        print(
-            "Available:",
-            len(content),
-            "values"
+    carrier_path = find_carrier()
+    payload = PAYLOAD_PATH.read_bytes()
+    frame = make_frame(payload)
+    bits = bits_from_bytes(frame)
+    repeated_bits = np.repeat(bits, REPETITIONS)
+
+    audio, sample_rate = sf.read(carrier_path, dtype="float64")
+    mono = audio.ndim == 1
+
+    # Preserve all channels; embed in channel 0 only for stereo audio.
+    working = audio.copy() if mono else audio[:, 0].copy()
+
+    required_samples = 2 * len(repeated_bits)
+    if required_samples > len(working):
+        raise ValueError(
+            f"Insufficient carrier capacity: need {required_samples} "
+            f"samples, available {len(working)}."
         )
 
-        return None
+    for i, bit in enumerate(repeated_bits):
+        j = 2 * i
+        working[j], working[j + 1] = embed_bit(
+            working[j], working[j + 1], int(bit)
+        )
 
-    # Create a copy
-    modified_content = content.copy()
+    if mono:
+        stego = working
+    else:
+        stego = audio.copy()
+        stego[:, 0] = working
 
-    # Embed secret information
-    modified_content[
-        :len(secret_data)
-    ] = (
-        modified_content[
-            :len(secret_data)
-        ]
-        + alpha * secret_data
-    )
+    # Avoid clipping; the carrier is expected to be normalized audio.
+    if np.max(np.abs(stego)) > 1.0:
+        raise ValueError(
+            "Embedded waveform exceeds the normalized audio range. "
+            "Use a normalized carrier to avoid clipping."
+        )
 
-    # Restore original shape
-    modified_content = modified_content.reshape(
-        content_features.shape
-    )
+    sf.write(OUTPUT_PATH, stego, sample_rate, subtype="PCM_16")
 
-    return modified_content
+    print("=" * 60)
+    print("WAVEFORM EMBEDDING COMPLETE")
+    print("=" * 60)
+    print(f"Carrier       : {carrier_path}")
+    print(f"Payload bytes : {len(payload)}")
+    print(f"Frame bytes   : {len(frame)}")
+    print(f"Sample rate   : {sample_rate} Hz")
+    print(f"Output        : {OUTPUT_PATH}")
+    print(f"Bits embedded: {len(bits)}")
+    print("Run the receiver before evaluating final results.")
 
-
-# ==========================================
-# MAIN
-# ==========================================
 
 if __name__ == "__main__":
-
-    print("=" * 55)
-    print("STEGANOGRAPHIC EMBEDDING STARTED")
-    print("=" * 55)
-
-    # --------------------------------------
-    # Import feature decoupling
-    # --------------------------------------
-
-    from modules.feature_decoupling import (
-        decouple_audio_features
-    )
-
-    # --------------------------------------
-    # Get content and style
-    # --------------------------------------
-
-    content_features, style_features = (
-        decouple_audio_features()
-    )
-
-    if content_features is None:
-
-        print("\nContent extraction failed.")
-
-        sys.exit()
-
-    # --------------------------------------
-    # Load encrypted face data
-    # --------------------------------------
-
-    encrypted_data = load_encrypted_face()
-
-    if encrypted_data is None:
-
-        sys.exit()
-
-    # --------------------------------------
-    # Embed encrypted face data
-    # --------------------------------------
-
-    modified_content = embed_data(
-        content_features,
-        encrypted_data,
-        alpha=0.01
-    )
-
-    if modified_content is None:
-
-        sys.exit()
-
-    # --------------------------------------
-    # Display results
-    # --------------------------------------
-
-    print("\nEmbedding completed successfully!")
-
-    print("\nOriginal content shape:")
-    print(content_features.shape)
-
-    print("\nModified content shape:")
-    print(modified_content.shape)
-
-    print("\nStyle feature shape:")
-    print(style_features.shape)
-
-    # --------------------------------------
-    # Save modified content
-    # --------------------------------------
-
-    np.save(
-        OUTPUT_PATH,
-        modified_content
-    )
-
-    print("\nModified content saved at:")
-    print(OUTPUT_PATH)
-
-    print("\n" + "=" * 55)
-    print("STEGANOGRAPHIC EMBEDDING COMPLETED")
-    print("=" * 55)
+    main()

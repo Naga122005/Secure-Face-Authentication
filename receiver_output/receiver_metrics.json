@@ -1,0 +1,34 @@
+{
+  "audio_comparison": {
+    "compared_samples": 101585,
+    "mse": 0.009365706616013226,
+    "rmse": 0.09677658092748073,
+    "mae": 0.06497289596852775,
+    "snr_db": -3.753094845880674
+  },
+  "carrier_file": "D:\\Secure_Face_Authentication\\Data\\audio_dtaset\\VCC2020-database-master\\vcc2020_database_groundtruth\\vcc2020_database_groundtruth\\TMM1\\E30012.wav",
+  "feature_comparison": {
+    "compared_samples": 1592,
+    "mse": 12182.921257715238,
+    "rmse": 110.37627126205722,
+    "mae": 82.55871451686747,
+    "snr_db": 2.665519141626196,
+    "correlation": 0.6827598553749128
+  },
+  "candidate_header_found": false,
+  "received_audio": "D:\\Secure_Face_Authentication\\data\\audio\\received_stego_audio.wav",
+  "sample_rate": 24000,
+  "duration_seconds": 4.232708333333333,
+  "mfcc_shape": [
+    13,
+    199
+  ],
+  "content_shape": [
+    8,
+    199
+  ],
+  "style_shape": [
+    5,
+    199
+  ]
+}

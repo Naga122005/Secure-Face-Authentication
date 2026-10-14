@@ -1,141 +1,225 @@
+import os
+import struct
 import numpy as np
-from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-import secrets
 
 
-# ==========================================
-# PROJECT PATH
-# ==========================================
+# ---------------------------------------------------------
+# PATHS
+# ---------------------------------------------------------
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-EMBEDDING_PATH = (
-    BASE_DIR
-    / "data"
-    / "faces"
-    / "face_embedding.npy"
+TEMPLATE_PATH = os.path.join(
+    PROJECT_ROOT,
+    "data",
+    "faces",
+    "cancelable_template.npy"
 )
 
-OUTPUT_PATH = (
-    BASE_DIR
-    / "data"
-    / "faces"
-    / "encrypted_face_embedding.bin"
+KEY_PATH = os.path.join(
+    PROJECT_ROOT,
+    "data",
+    "faces",
+    "encryption_key.bin"
 )
 
-KEY_PATH = (
-    BASE_DIR
-    / "data"
-    / "faces"
-    / "encryption_key.bin"
+OUTPUT_PATH = os.path.join(
+    PROJECT_ROOT,
+    "data",
+    "faces",
+    "encrypted_cancelable_template.bin"
 )
 
 
-# ==========================================
-# LOAD FACE EMBEDDING
-# ==========================================
+# ---------------------------------------------------------
+# COMPACT QUANTIZATION
+# ---------------------------------------------------------
 
-def load_face_embedding():
+def quantize_template(template):
+    """
+    Convert 512-D float32 cancelable template
+    into compact int8 representation.
 
-    if not EMBEDDING_PATH.exists():
+    The scale is stored along with the quantized data.
+    """
 
-        print("\nERROR: Face embedding not found!")
-        print("Expected location:")
-        print(EMBEDDING_PATH)
+    max_abs = np.max(np.abs(template))
 
-        return None
+    if max_abs == 0:
+        raise ValueError("Template contains only zero values.")
 
-    embedding = np.load(EMBEDDING_PATH)
+    scale = max_abs / 127.0
 
-    print("\nFace embedding loaded successfully.")
-    print("Embedding shape:", embedding.shape)
+    quantized = np.round(
+        template / scale
+    ).astype(np.int8)
 
-    return embedding
+    return quantized, np.float32(scale)
 
 
-# ==========================================
-# GENERATE AES-256 KEY
-# ==========================================
+# ---------------------------------------------------------
+# MAIN ENCRYPTION
+# ---------------------------------------------------------
 
-def generate_key():
+def main():
+
+    print("=" * 60)
+    print("AES-256-GCM ENCRYPTION")
+    print("=" * 60)
+
+    # -----------------------------------------------------
+    # 1. LOAD CANCELABLE TEMPLATE
+    # -----------------------------------------------------
+
+    print("\n[1] Loading cancelable biometric template...")
+
+    template = np.load(TEMPLATE_PATH)
+
+    print("Template shape:", template.shape)
+    print("Template dtype:", template.dtype)
+
+    if template.shape != (512,):
+        raise ValueError(
+            "Expected cancelable template shape (512,)"
+        )
+
+    template = template.astype(np.float32)
+
+    print("Valid 512-D cancelable template.")
+
+    # -----------------------------------------------------
+    # 2. QUANTIZE
+    # -----------------------------------------------------
+
+    print("\n[2] Compacting template using INT8 quantization...")
+
+    quantized, scale = quantize_template(template)
+
+    print("Original size :", template.nbytes, "bytes")
+    print("Quantized size:", quantized.nbytes, "bytes")
+    print("Scale         :", scale)
+
+    # Verify reconstruction
+    reconstructed = (
+        quantized.astype(np.float32) * scale
+    )
+
+    cosine_similarity = np.dot(
+        template,
+        reconstructed
+    ) / (
+        np.linalg.norm(template) *
+        np.linalg.norm(reconstructed)
+    )
+
+    print(
+        "Quantization cosine similarity:",
+        cosine_similarity
+    )
+
+    # -----------------------------------------------------
+    # 3. CREATE COMPACT PLAINTEXT
+    # -----------------------------------------------------
+
+    print("\n[3] Creating compact biometric data...")
+
+    # Format:
+    #
+    # 4 bytes  : MAGIC = CBQ1
+    # 1 byte   : VERSION
+    # 4 bytes  : number of template values
+    # 4 bytes  : quantization scale (float32)
+    # 512 bytes: INT8 template
+    #
+
+    MAGIC = b"CBQ1"
+    VERSION = 1
+
+    header = (
+        MAGIC +
+        struct.pack(">B", VERSION) +
+        struct.pack(">I", len(quantized)) +
+        struct.pack(">f", float(scale))
+    )
+
+    compact_data = (
+        header +
+        quantized.tobytes()
+    )
+
+    print("Compact header size:", len(header), "bytes")
+    print("Compact biometric size:", len(compact_data), "bytes")
+
+    # -----------------------------------------------------
+    # 4. GENERATE AES-256 KEY
+    # -----------------------------------------------------
+
+    print("\n[4] Generating AES-256 key...")
 
     key = AESGCM.generate_key(bit_length=256)
 
-    with open(KEY_PATH, "wb") as file:
-        file.write(key)
+    with open(KEY_PATH, "wb") as f:
+        f.write(key)
 
-    print("\nAES-256 encryption key generated.")
-    print("Key saved at:")
+    print("AES key saved:")
     print(KEY_PATH)
 
-    return key
+    # -----------------------------------------------------
+    # 5. AES-256-GCM ENCRYPTION
+    # -----------------------------------------------------
 
+    print("\n[5] Encrypting compact cancelable template...")
 
-# ==========================================
-# ENCRYPT FACE EMBEDDING
-# ==========================================
+    aesgcm = AESGCM(key)
 
-def encrypt_embedding(embedding, key):
+    nonce = os.urandom(12)
 
-    # Convert NumPy array into bytes
-    embedding_bytes = embedding.astype(
-        np.float32
-    ).tobytes()
-
-    # Create AES-GCM object
-    aes = AESGCM(key)
-
-    # Generate random nonce
-    nonce = secrets.token_bytes(12)
-
-    # Encrypt
-    encrypted_data = aes.encrypt(
+    encrypted_data = aesgcm.encrypt(
         nonce,
-        embedding_bytes,
+        compact_data,
         None
     )
 
-    # Store nonce + encrypted data
+    # Store nonce + ciphertext + authentication tag
     final_data = nonce + encrypted_data
 
-    with open(OUTPUT_PATH, "wb") as file:
-        file.write(final_data)
+    with open(OUTPUT_PATH, "wb") as f:
+        f.write(final_data)
 
-    print("\nFace embedding encrypted successfully.")
+    print("Encrypted data size:", len(final_data), "bytes")
 
-    print("Encrypted data saved at:")
-    print(OUTPUT_PATH)
+    # -----------------------------------------------------
+    # 6. FINAL INFORMATION
+    # -----------------------------------------------------
 
-    print("\nEncrypted data size:")
+    print("\n" + "=" * 60)
+    print("ENCRYPTION COMPLETED")
+    print("=" * 60)
+
+    print("\nBiometric representation:")
+    print("512-D Cancelable Template")
+
+    print("\nCompression:")
+    print("Float32 → INT8")
+
+    print("\nOriginal template:")
+    print(template.nbytes, "bytes")
+
+    print("\nCompact template:")
+    print(len(compact_data), "bytes")
+
+    print("\nEncrypted payload:")
     print(len(final_data), "bytes")
 
+    print("\nSaved at:")
+    print(OUTPUT_PATH)
 
-# ==========================================
-# MAIN
-# ==========================================
+    print("\nAES key:")
+    print(KEY_PATH)
+
+    print("\nReady for content-domain steganographic embedding.")
+
 
 if __name__ == "__main__":
-
-    print("=" * 50)
-    print("FACE EMBEDDING ENCRYPTION")
-    print("=" * 50)
-
-    # Load embedding
-    embedding = load_face_embedding()
-
-    if embedding is None:
-        exit()
-
-    # Generate encryption key
-    key = generate_key()
-
-    # Encrypt embedding
-    encrypt_embedding(
-        embedding,
-        key
-    )
-
-    print("\n" + "=" * 50)
-    print("ENCRYPTION COMPLETED")
-    print("=" * 50)
+    main()

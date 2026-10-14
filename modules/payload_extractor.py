@@ -1,249 +1,108 @@
-import os
+
+from pathlib import Path
+import hashlib
+import struct
+
 import numpy as np
-import librosa
-import torch
-import torch.nn as nn
+import soundfile as sf
+
+ROOT = Path(__file__).resolve().parent.parent
+AUDIO_DIR = ROOT / "data" / "audio"
+
+STEGO_PATH = AUDIO_DIR / "received_stego_audio.wav"
+EXPECTED_PATH = AUDIO_DIR / "encoded_biometric_payload.bin"
+RECOVERED_PATH = AUDIO_DIR / "recovered_biometric_payload.bin"
+
+MAGIC = b"CFD1"
+HEADER_SIZE = 41
+REPETITIONS = 8
+QUANT_STEP = 0.002
 
 
-class PayloadExtractor(nn.Module):
-    """
-    Extracts the embedded payload from the content
-    representation received from the stego audio.
-    """
+def extract_bits(audio, count):
+    available_bits = min(count, len(audio) // (2 * REPETITIONS))
+    recovered = []
 
-    def __init__(self):
-        super(PayloadExtractor, self).__init__()
+    for i in range(available_bits):
+        votes = []
+        for r in range(REPETITIONS):
+            pair_index = (i * REPETITIONS + r) * 2
+            difference = audio[pair_index] - audio[pair_index + 1]
+            quantized_index = int(np.floor(difference / QUANT_STEP))
+            votes.append(quantized_index % 2)
 
-        self.extractor = nn.Sequential(
-            nn.Linear(8 * 146, 1024),
-            nn.ReLU(),
+        recovered.append(1 if sum(votes) > len(votes) // 2 else 0)
 
-            nn.Linear(1024, 512),
-            nn.ReLU(),
+    return np.asarray(recovered, dtype=np.uint8)
 
-            nn.Linear(512, 2076)
+
+def bits_to_bytes(bits):
+    usable = (len(bits) // 8) * 8
+    if usable == 0:
+        return b""
+    return np.packbits(bits[:usable], bitorder="big").tobytes()
+
+
+def main():
+    if not STEGO_PATH.exists():
+        raise FileNotFoundError(f"Stego audio missing: {STEGO_PATH}")
+
+    audio, sample_rate = sf.read(STEGO_PATH, dtype="float64")
+    if audio.ndim == 2:
+        audio = audio[:, 0]
+
+    # Read the fixed 9-byte prefix: magic + version + payload length.
+    prefix_bits = extract_bits(audio, 9 * 8)
+    prefix = bits_to_bytes(prefix_bits)
+
+    if len(prefix) < 9 or prefix[:4] != MAGIC:
+        raise ValueError(
+            "CFD1 header not recovered. Ensure this stego file was "
+            "created by the matching steganographic_embedding module."
         )
 
-    def forward(self, content_features):
+    version = prefix[4]
+    payload_length = struct.unpack(">I", prefix[5:9])[0]
+    if version != 1:
+        raise ValueError(f"Unsupported payload version: {version}")
 
-        # Flatten content features
-        content_features = content_features.reshape(
-            content_features.shape[0],
-            -1
+    total_frame_bytes = HEADER_SIZE + payload_length
+    total_frame_bits = total_frame_bytes * 8
+
+    bits = extract_bits(audio, total_frame_bits)
+    frame = bits_to_bytes(bits)
+
+    if len(frame) != total_frame_bytes:
+        raise ValueError("Not enough samples to recover the full payload.")
+
+    payload = frame[HEADER_SIZE:]
+    expected_digest = frame[9:41]
+    actual_digest = hashlib.sha256(payload).digest()
+
+    if expected_digest != actual_digest:
+        raise ValueError(
+            "Payload SHA-256 verification failed. "
+            "The recovered data is corrupted."
         )
 
-        payload = self.extractor(
-            content_features
-        )
-
-        return payload
-
-
-def extract_payload():
+    RECOVERED_PATH.write_bytes(payload)
 
     print("=" * 60)
-    print("PAYLOAD EXTRACTION STARTED")
+    print("PAYLOAD EXTRACTION RESULTS")
     print("=" * 60)
+    print(f"Sample rate        : {sample_rate} Hz")
+    print(f"Recovered bytes    : {len(payload)}")
+    print(f"SHA-256 verified   : PASS")
+    print(f"Recovered file     : {RECOVERED_PATH}")
 
-    # --------------------------------------------------
-    # PROJECT ROOT
-    # --------------------------------------------------
-
-    project_root = os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))
-    )
-
-    # --------------------------------------------------
-    # STEGO AUDIO PATH
-    # --------------------------------------------------
-
-    stego_audio_path = os.path.join(
-        project_root,
-        "data",
-        "audio",
-        "stego_audio.wav"
-    )
-
-    if not os.path.exists(stego_audio_path):
-
-        print("\nERROR: stego_audio.wav not found!")
-
-        print("Expected:")
-        print(stego_audio_path)
-
-        return
-
-    # --------------------------------------------------
-    # LOAD STEGO AUDIO
-    # --------------------------------------------------
-
-    print("\nLoading stego audio...")
-
-    audio, sample_rate = librosa.load(
-        stego_audio_path,
-        sr=None
-    )
-
-    print("Stego audio loaded successfully.")
-
-    print("Sample rate:", sample_rate)
-
-    print(
-        "Number of samples:",
-        len(audio)
-    )
-
-    print(
-        "Duration:",
-        round(
-            len(audio) / sample_rate,
-            2
-        ),
-        "seconds"
-    )
-
-    # --------------------------------------------------
-    # NORMALIZE AUDIO
-    # --------------------------------------------------
-
-    max_value = np.max(
-        np.abs(audio)
-    )
-
-    if max_value > 0:
-
-        audio = audio / max_value
-
-    print("\nAudio normalized successfully.")
-
-    # --------------------------------------------------
-    # EXTRACT MFCC
-    # --------------------------------------------------
-
-    print("\nExtracting MFCC features...")
-
-    mfcc_features = librosa.feature.mfcc(
-        y=audio,
-        sr=sample_rate,
-        n_mfcc=13
-    )
-
-    print(
-        "MFCC shape:",
-        mfcc_features.shape
-    )
-
-    # --------------------------------------------------
-    # HANDLE FRAME SIZE
-    # --------------------------------------------------
-
-    target_frames = 146
-
-    if mfcc_features.shape[1] < target_frames:
-
-        padding = target_frames - mfcc_features.shape[1]
-
-        mfcc_features = np.pad(
-            mfcc_features,
-            ((0, 0), (0, padding)),
-            mode="constant"
-        )
-
-    elif mfcc_features.shape[1] > target_frames:
-
-        mfcc_features = mfcc_features[
-            :, :target_frames
-        ]
-
-    print(
-        "Adjusted MFCC shape:",
-        mfcc_features.shape
-    )
-
-    # --------------------------------------------------
-    # DECOUPLE CONTENT
-    # --------------------------------------------------
-
-    content_features = mfcc_features[:8, :]
-
-    print("\nContent features extracted.")
-
-    print(
-        "Content shape:",
-        content_features.shape
-    )
-
-    # --------------------------------------------------
-    # CONVERT TO TORCH
-    # --------------------------------------------------
-
-    content_tensor = torch.tensor(
-        content_features,
-        dtype=torch.float32
-    ).unsqueeze(0)
-
-    # --------------------------------------------------
-    # CREATE EXTRACTOR
-    # --------------------------------------------------
-
-    extractor = PayloadExtractor()
-
-    extractor.eval()
-
-    # --------------------------------------------------
-    # EXTRACT PAYLOAD
-    # --------------------------------------------------
-
-    print("\nExtracting embedded payload...")
-
-    with torch.no_grad():
-
-        extracted_payload = extractor(
-            content_tensor
-        )
-
-    extracted_payload = (
-        extracted_payload
-        .cpu()
-        .numpy()
-        .squeeze()
-    )
-
-    print(
-        "\nExtracted payload successfully."
-    )
-
-    print(
-        "Extracted payload shape:",
-        extracted_payload.shape
-    )
-
-    # --------------------------------------------------
-    # SAVE EXTRACTED PAYLOAD
-    # --------------------------------------------------
-
-    output_path = os.path.join(
-        project_root,
-        "data",
-        "faces",
-        "extracted_face_payload.npy"
-    )
-
-    np.save(
-        output_path,
-        extracted_payload
-    )
-
-    print("\nExtracted payload saved successfully.")
-
-    print("Saved at:")
-    print(output_path)
-
-    print("\n" + "=" * 60)
-    print("STEP 9 COMPLETED")
-    print("=" * 60)
+    if EXPECTED_PATH.exists():
+        expected = EXPECTED_PATH.read_bytes()
+        print(f"Sender match       : {payload == expected}")
+        if payload != expected:
+            raise ValueError("Recovered payload differs from sender payload.")
+    else:
+        print("Sender match       : Not checked (sender file missing)")
 
 
 if __name__ == "__main__":
-
-    extract_payload()
+    main()

@@ -1,605 +1,164 @@
-import cv2
-import torch
+import os
 import numpy as np
-import mysql.connector
 
-from PIL import Image
-from facenet_pytorch import MTCNN, InceptionResnetV1
-
-
-# ============================================================
-# DATABASE CONFIGURATION
-# ============================================================
-
-DB_HOST = "localhost"
-DB_USER = "root"
-DB_PASSWORD = "naga*"
-DB_NAME = "secure_face_authentication"
-
-
-# ============================================================
-# DEVICE
-# ============================================================
-
-device = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
+from modules.face_feature_extraction import (
+    extract_face_features
 )
 
-print("Using device:", device)
-
-
-# ============================================================
-# MODELS
-# ============================================================
-
-mtcnn = MTCNN(
-    image_size=160,
-    margin=20,
-    min_face_size=40,
-    keep_all=False,
-    device=device
+from modules.cancelable_biometrics import (
+    CancelableBiometrics
 )
 
-facenet = InceptionResnetV1(
-    pretrained="vggface2"
-).eval().to(device)
+from modules.database_audio_loader import (
+    AudioDatabase
+)
 
 
-# ============================================================
-# DATABASE
-# ============================================================
+class FaceRegistration:
 
-def connect_database():
+    def __init__(self):
 
-    try:
-
-        connection = mysql.connector.connect(
-            host=DB_HOST,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME
+        self.cancelable = (
+            CancelableBiometrics(512)
         )
 
-        print("\nDatabase connected successfully!")
+        self.database = AudioDatabase()
 
-        return connection
+    def register(
+        self,
+        username,
+        face_image,
+        stego_audio_path
+    ):
 
-    except mysql.connector.Error as error:
+        print("\n==============================")
+        print("FACE REGISTRATION")
+        print("==============================")
 
-        print("\nDatabase connection failed!")
-        print("Error:", error)
+        # ----------------------------------------
+        # STEP 1: FACE FEATURE EXTRACTION
+        # ----------------------------------------
 
-        return None
-
-
-# ============================================================
-# CAPTURE FACE
-# ============================================================
-
-def capture_face():
-
-    print("\n" + "=" * 60)
-    print("FACE CAPTURE")
-    print("=" * 60)
-
-    print("\nOpening webcam...")
-    print("Look at the camera.")
-    print("Press SPACE to capture.")
-    print("Press Q to cancel.")
-
-    camera = cv2.VideoCapture(0)
-
-    if not camera.isOpened():
-
-        print("\nERROR: Webcam could not be opened.")
-
-        return None
-
-    captured_face = None
-
-    while True:
-
-        ret, frame = camera.read()
-
-        if not ret:
-
-            print("\nERROR: Could not read webcam frame.")
-
-            break
-
-        # ----------------------------------------------------
-        # Convert BGR → RGB
-        # ----------------------------------------------------
-
-        rgb_frame = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGB
+        face_embedding = (
+            extract_face_features(
+                face_image
+            )
         )
 
-        # ----------------------------------------------------
-        # Detect face
-        # ----------------------------------------------------
-
-        boxes, probabilities = mtcnn.detect(
-            rgb_frame
-        )
-
-        # ----------------------------------------------------
-        # Draw face box
-        # ----------------------------------------------------
-
-        if boxes is not None:
-
-            # Only use first detected face
-            box = boxes[0]
-
-            x1, y1, x2, y2 = [
-                int(v) for v in box
-            ]
-
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-
-            x2 = min(
-                frame.shape[1],
-                x2
-            )
-
-            y2 = min(
-                frame.shape[0],
-                y2
-            )
-
-            cv2.rectangle(
-                frame,
-                (x1, y1),
-                (x2, y2),
-                (0, 255, 0),
-                2
-            )
-
-            cv2.putText(
-                frame,
-                "FACE DETECTED",
-                (x1, max(30, y1 - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2
-            )
-
-        else:
-
-            cv2.putText(
-                frame,
-                "NO FACE DETECTED",
-                (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 0, 255),
-                2
-            )
-
-        # ----------------------------------------------------
-        # Instructions
-        # ----------------------------------------------------
-
-        cv2.putText(
-            frame,
-            "SPACE = CAPTURE",
-            (20, frame.shape[0] - 50),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2
-        )
-
-        cv2.putText(
-            frame,
-            "Q = QUIT",
-            (20, frame.shape[0] - 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2
-        )
-
-        # ----------------------------------------------------
-        # Display
-        # ----------------------------------------------------
-
-        cv2.imshow(
-            "Secure Face Registration",
-            frame
-        )
-
-        # ----------------------------------------------------
-        # KEYBOARD INPUT
-        # ----------------------------------------------------
-
-        key = cv2.waitKey(1) & 0xFF
-
-        # ----------------------------------------------------
-        # SPACE → CAPTURE
-        # ----------------------------------------------------
-
-        if key == 32:
-
-            print("\nSPACE pressed.")
-
-            if boxes is None:
-
-                print(
-                    "No face detected. "
-                    "Please try again."
-                )
-
-                continue
-
-            print(
-                "Face detected. Capturing..."
-            )
-
-            # Get first detected face
-            box = boxes[0]
-
-            x1, y1, x2, y2 = [
-                int(v) for v in box
-            ]
-
-            # Add small margin
-            margin = 20
-
-            x1 = max(
-                0,
-                x1 - margin
-            )
-
-            y1 = max(
-                0,
-                y1 - margin
-            )
-
-            x2 = min(
-                rgb_frame.shape[1],
-                x2 + margin
-            )
-
-            y2 = min(
-                rgb_frame.shape[0],
-                y2 + margin
-            )
-
-            # ------------------------------------------------
-            # CROP FACE
-            # ------------------------------------------------
-
-            captured_face = rgb_frame[
-                y1:y2,
-                x1:x2
-            ].copy()
-
-            if captured_face.size == 0:
-
-                print(
-                    "ERROR: Face crop is empty."
-                )
-
-                captured_face = None
-
-                continue
-
-            print(
-                "Face captured successfully!"
-            )
-
-            print(
-                "Captured face shape:",
-                captured_face.shape
-            )
-
-            # ------------------------------------------------
-            # SAVE CAPTURED FACE IMAGE
-            # ------------------------------------------------
-
-            save_path = (
-                "data/faces/captured_face.jpg"
-            )
-
-            # RGB → BGR for OpenCV
-            captured_bgr = cv2.cvtColor(
-                captured_face,
-                cv2.COLOR_RGB2BGR
-            )
-
-            cv2.imwrite(
-                save_path,
-                captured_bgr
-            )
-
-            print(
-                "Captured face saved at:"
-            )
-
-            print(save_path)
-
-            break
-
-        # ----------------------------------------------------
-        # Q → QUIT
-        # ----------------------------------------------------
-
-        elif key == ord("q"):
-
-            print(
-                "\nFace capture cancelled."
-            )
-
-            break
-
-    camera.release()
-
-    cv2.destroyAllWindows()
-
-    return captured_face
-
-
-# ============================================================
-# FACE FEATURE EXTRACTION
-# ============================================================
-
-def extract_face_features(face_image):
-
-    print("\n" + "=" * 60)
-    print("FACIAL FEATURE EXTRACTION")
-    print("=" * 60)
-
-    if face_image is None:
+        face_embedding = np.asarray(
+            face_embedding,
+            dtype=np.float32
+        ).flatten()
 
         print(
-            "ERROR: Face image is empty."
+            "Face embedding shape:",
+            face_embedding.shape
         )
 
-        return None
+        # ----------------------------------------
+        # STEP 2: CANCELABLE BIOMETRICS
+        # ----------------------------------------
 
-    # Convert NumPy → PIL
-    pil_image = Image.fromarray(
-        face_image
-    )
-
-    # FaceNet expects aligned face
-    face_tensor = mtcnn(
-        pil_image
-    )
-
-    if face_tensor is None:
+        cancelable_template = (
+            self.cancelable.transform(
+                face_embedding,
+                username
+            )
+        )
 
         print(
-            "\nERROR: Face could not be processed."
+            "Cancelable template shape:",
+            cancelable_template.shape
         )
 
-        return None
+        # ----------------------------------------
+        # STEP 3:
+        # ENCRYPT CANCELABLE TEMPLATE
+        # ----------------------------------------
 
-    # Add batch dimension
-    face_tensor = (
-        face_tensor
-        .unsqueeze(0)
-        .to(device)
-    )
+        # IMPORTANT:
+        # Call your EXISTING ML-KEM + AES
+        # encryption function here.
 
-    print(
-        "\nGenerating facial embedding..."
-    )
-
-    with torch.no_grad():
-
-        embedding = facenet(
-            face_tensor
+        encrypted_template = (
+            self.encrypt_template(
+                cancelable_template,
+                username
+            )
         )
 
-    # Normalize
-    embedding = embedding / embedding.norm(
-        p=2,
-        dim=1,
-        keepdim=True
-    )
-
-    embedding = (
-        embedding
-        .cpu()
-        .numpy()[0]
-    )
-
-    print(
-        "\nFacial feature extraction completed."
-    )
-
-    print(
-        "Feature shape:",
-        embedding.shape
-    )
-
-    print(
-        "Feature dimension:",
-        embedding.size
-    )
-
-    return embedding
-
-
-# ============================================================
-# STORE FACE FEATURES
-# ============================================================
-
-def store_features(
-    username,
-    face_features
-):
-
-    print("\n" + "=" * 60)
-    print("DATABASE STORAGE")
-    print("=" * 60)
-
-    connection = connect_database()
-
-    if connection is None:
-
-        return False
-
-    try:
-
-        cursor = connection.cursor()
-
-        # Convert NumPy array → bytes
-        feature_bytes = (
-            face_features
-            .astype(np.float32)
-            .tobytes()
+        print(
+            "Encrypted template generated."
         )
 
-        query = """
-        INSERT INTO users
-        (username, face_features)
-        VALUES (%s, %s)
+        # ----------------------------------------
+        # STEP 4:
+        # HIFI STEGO EMBEDDING
+        # ----------------------------------------
+
+        self.create_stego_audio(
+            encrypted_template,
+            stego_audio_path
+        )
+
+        print(
+            "High-Fidelity Stego Audio created."
+        )
+
+        # ----------------------------------------
+        # STEP 5:
+        # STORE STEGO AUDIO ONLY
+        # ----------------------------------------
+
+        self.database.store_stego_audio(
+            username,
+            stego_audio_path
+        )
+
+        print("\nRegistration completed.")
+        print(
+            "Database stores: HIGH-FIDELITY STEGO AUDIO"
+        )
+
+    # --------------------------------------------
+    # ENCRYPTION
+    # --------------------------------------------
+
+    def encrypt_template(
+        self,
+        template,
+        username
+    ):
+
+        """
+        Connect this function to your existing
+        ML-KEM + AES-256 implementation.
         """
 
-        cursor.execute(
-            query,
-            (
-                username,
-                feature_bytes
-            )
+        template_bytes = template.tobytes()
+
+        return template_bytes
+
+    # --------------------------------------------
+    # HIFI STEGO
+    # --------------------------------------------
+
+    def create_stego_audio(
+        self,
+        encrypted_template,
+        output_path
+    ):
+
+        """
+        Connect this function to your existing
+        HIFI-Stego embedding pipeline.
+
+        encrypted_template must be embedded
+        into the content representation.
+        """
+
+        raise NotImplementedError(
+            "Connect your existing "
+            "feature coupling / payload encoder "
+            "code here."
         )
-
-        connection.commit()
-
-        print(
-            "\nFace feature stored successfully!"
-        )
-
-        print(
-            "Username:",
-            username
-        )
-
-        print(
-            "Feature size:",
-            len(feature_bytes),
-            "bytes"
-        )
-
-        cursor.close()
-        connection.close()
-
-        return True
-
-    except mysql.connector.Error as error:
-
-        print(
-            "\nDatabase storage failed."
-        )
-
-        print(
-            "Error:",
-            error
-        )
-
-        connection.close()
-
-        return False
-
-
-# ============================================================
-# MAIN REGISTRATION
-# ============================================================
-
-def register_user():
-
-    print("\n")
-    print("=" * 60)
-    print("SECURE FACE AUTHENTICATION")
-    print("USER REGISTRATION")
-    print("=" * 60)
-
-    username = input(
-        "\nEnter username: "
-    ).strip()
-
-    if username == "":
-
-        print(
-            "\nERROR: Username cannot be empty."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # CAPTURE FACE
-    # --------------------------------------------------------
-
-    face_image = capture_face()
-
-    if face_image is None:
-
-        print(
-            "\nRegistration failed."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # EXTRACT FEATURES
-    # --------------------------------------------------------
-
-    face_features = extract_face_features(
-        face_image
-    )
-
-    if face_features is None:
-
-        print(
-            "\nRegistration failed."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # STORE FEATURES
-    # --------------------------------------------------------
-
-    success = store_features(
-        username,
-        face_features
-    )
-
-    if success:
-
-        print("\n")
-        print("=" * 60)
-        print("REGISTRATION SUCCESSFUL")
-        print("=" * 60)
-
-        print(
-            "\nUser:",
-            username
-        )
-
-        print(
-            "Face feature dimension:",
-            face_features.shape
-        )
-
-    else:
-
-        print(
-            "\nREGISTRATION FAILED"
-        )
-
-
-# ============================================================
-# PROGRAM START
-# ============================================================
-
-if __name__ == "__main__":
-
-    register_user()

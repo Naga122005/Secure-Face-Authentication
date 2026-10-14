@@ -1,0 +1,42 @@
+
+This README explains evaluation data and submission of the third Voice Conversion Challenge (VCC 2020). 
+
+This folder contains the evaluation data for submission.
+
+There are four source speakers: SEF1, SEF2, SEM1, SEM2.
+They are the same source speakers included in the previously released training data. 
+Each speaker's folder has 25 sentences. 
+
+If you participate the first task, you are supposed to transform the speaker characteristics of each utterance of SEF1, SEF2, SEM1, SEM2 to either TEF1, TEF2, TEM1, or TEM2. There is a total of 16 source-target speaker pair combinations and you need to generate 16 x 25 = 400 speech waveforms. The waveforms must be RIFF/WAVE format.
+
+If you participate the second task, you are supposed to transform the speaker characteristics of each utterance of SEF1, SEF2, SEM1, SEM2 to either TFF1, TFM1, TGF1, TGM1, TMF1, or TMM1. There is a total of 24 source-target speaker pair combinations and you need to generate 24 x 25 = 600 speech waveforms. The waveforms must be RIFF/WAVE format.
+
+In order to make our evaluation preparations easier, please use the following naming structure and create a folder using your official team name. You can find your official team name in the header of e-mail that you receive from us.
+
+Team_name/TargetID_SourceID_filename.wav
+
+For instance, a converted speech waveform of E30001.wav uttered by source speaker SEF1 to target speaker TEF1, for team NU, becomes: 
+NU/TEF1_SEF1_E30001.wav
+
+Please also tell us your team information by filling out a text file "TeamInfo.txt."
+
+Please then zip the above folder and the text file (TeamInfo.txt), and name it based on your team name (e.g. NU.zip) Please then send the zip file to us using Dropbox File Request below. 
+https://www.dropbox.com/request/OMm15FElCfI4SVUCM35D
+
+Only if you cannot use the Dropbox File Request, please use your preferable uploading service and inform us how to download your zip file.
+
+Please tell us as soon as possible if your team will not be submitting the converted samples. We would appreciate your kindness in leaving an open slot if you will not be participating in the challenge in the end.
+
+More details about the challenge can be found via the official website: http://vc-challenge.org/
+
+If you have any questions, feel free to contact the organizers via email: vcc2020@vc-challenge.org
+
+Thank you!
+
+The Third Voice Conversion Challenge
+Organizers
+Tomoki Toda & Wen-Chin Huang (Nagoya University) 
+Junichi Yamagishi (National Institute of Informatics) 
+Tomi Kinnunen (University of Eastern Finland) 
+Zhenhua Ling (University of Science and Technology of China) 
+Rohan Kumar Das & Xiaohai Tian (National University of Singapore)
